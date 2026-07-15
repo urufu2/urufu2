@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ナクト - Simple Anime RPG (比例完全修正版)</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a24;
+            font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #fff;
+            touch-action: none;
+        }
+        #game-container {
+            position: relative;
+            background-color: #000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 4px solid #3a3d52;
+            width: min(95vw, 800px);
+            max-height: 90vh;
+            aspect-ratio: 800 / 600;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #76c070;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            touch-action: none;
+        }
+        .ui-panel {
+            position: absolute;
+            background: rgba(24, 26, 37, 0.85);
+            border: 2px solid #515673;
+            border-radius: 8px;
+            padding: 10px 14px;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+        }
+        #hud {
+            top: 12px;
+            right: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+            min-width: 160px;
+        }
+        #hud h2 {
+            margin: 0 0 6px 0;
+            font-size: 15px;
+            color: #ffd166;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+        .status-bar {
+            width: 100%;
+            height: 6px;
+            background: #333;
+            border-radius: 4px;
+            margin-top: 4px;
+            overflow: hidden;
+        }
+        .status-fill {
+            height: 100%;
+            background: #ff4d6d;
+            width: 100%;
+            transition: width 0.3s;
+        }
+        #instructions {
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            font-size: 12px;
+            color: #e0e0e6;
+            pointer-events: none;
+            width: 80%;
+            max-width: 360px;
+            background: rgba(24, 26, 37, 0.75);
+        }
+        .badge {
+            display: inline-block;
+            background: #4cc9f0;
+            color: #000;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 11px;
+            margin-right: 4px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    
+    <!-- HUD -->
+    <div id="hud" class="ui-panel">
+        <h2>ステータス</h2>
+        <div><span class="badge">PLAYER</span> ナクト</div>
+        <div style="margin-top: 6px; font-size: 12px; color: #aaa;">HP</div>
+        <div class="status-bar"><div class="status-fill"></div></div>
+        <div id="coords" style="margin-top: 8px; font-size: 11px; color: #8b9bb4;">World X: 0, Y: 0</div>
+    </div>
+
+    <div id="instructions" class="ui-panel" style="display: none;">
+        画面内を<strong>タップ</strong>した場所にキャラクターが移動します。<br>
+        移動方向に合わせてアニメーションが切り替わります。
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const coordsEl = document.getElementById('coords');
+
+// 図1の新スプライトシート（1500x1000, 各フレーム250x500の縦長）
+const charImage = new Image();
+charImage.src = 'IMG_5806.jpg';
+
+// マップ背景画像
+const mapImage = new Image();
+mapImage.src = 'IMG_5814.jpg';
+
+const WORLD = {
+    width: 1500,
+    height: 1348,
+    tileSize: 80
+};
+
+const player = {
+    x: 750, 
+    y: 674,
+    targetX: 750,
+    targetY: 674,
+    // 表示サイズの基準（比例を保ちつつ大きめに）
+    baseSize: 96,        // ここを大きくするとキャラクターが大きく表示される
+    speed: 4,
+    isMoving: false,
+    direction: 'down',
+    animFrame: 0,      
+    animTimer: 0       
+};
+
+const camera = {
+    x: 350,
+    y: 374,
+    lerpFactor: 0.08
+};
+
+let moonPhase = 0;
+let lastPhaseChange = Date.now();
+const PHASE_DURATION = 8000;
+
+function resizeGame() {
+    const container = document.getElementById('game-container');
+    const maxW = Math.min(window.innerWidth * 0.95, 800);
+    const maxH = Math.min(window.innerHeight * 0.88, 600);
+    
+    let w = maxW;
+    let h = w * (600 / 800);
+    
+    if (h > maxH) {
+        h = maxH;
+        w = h * (800 / 600);
+    }
+    
+    container.style.width = `${w}px`;
+    container.style.height = `${h}px`;
+}
+
+canvas.addEventListener('mousedown', handlePointerDown);
+canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length > 0) {
+        handlePointerDown(e.touches[0]);
+    }
+    e.preventDefault();
+}, { passive: false });
+
+function handlePointerDown(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    const clickX = (e.clientX - rect.left) * scaleX;
+    const clickY = (e.clientY - rect.top) * scaleY;
+
+    player.targetX = Math.max(20, Math.min(WORLD.width - 20, clickX + camera.x));
+    player.targetY = Math.max(20, Math.min(WORLD.height - 20, clickY + camera.y));
+    player.isMoving = true;
+}
+
+function update() {
+    const dx = player.targetX - player.x;
+    const dy = player.targetY - player.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    if (distance > player.speed) {
+        const angle = Math.atan2(dy, dx);
+        player.x += Math.cos(angle) * player.speed;
+        player.y += Math.sin(angle) * player.speed;
+
+        if (Math.abs(dx) > Math.abs(dy)) {
+            player.direction = dx > 0 ? 'right' : 'left';
+        } else {
+            player.direction = dy > 0 ? 'down' : 'up';
+        }
+
+        player.animTimer++;
+        if (player.animTimer >= 10) {
+            player.animFrame = (player.animFrame + 1) % 3;
+            player.animTimer = 0;
+        }
+    } else {
+        player.x = player.targetX;
+        player.y = player.targetY;
+        player.isMoving = false;
+        player.animFrame = 1;
+    }
+
+    const targetCamX = player.x - canvas.width / 2;
+    const targetCamY = player.y - canvas.height / 2;
+
+    camera.x += (targetCamX - camera.x) * camera.lerpFactor;
+    camera.y += (targetCamY - camera.y) * camera.lerpFactor;
+
+    camera.x = Math.max(0, Math.min(WORLD.width - canvas.width, camera.x));
+    camera.y = Math.max(0, Math.min(WORLD.height - canvas.height, camera.y));
+
+    coordsEl.textContent = `World X: ${Math.round(player.x)}, Y: ${Math.round(player.y)}`;
+
+    if (Date.now() - lastPhaseChange > PHASE_DURATION) {
+        moonPhase = (moonPhase + 1) % 8;
+        lastPhaseChange = Date.now();
+    }
+}
+
+function drawMoon(ctx, x, y, size, phase) {
+    ctx.save();
+    ctx.translate(x, y);
+    const radius = size / 2;
+    ctx.fillStyle = '#f4e8c1';
+    ctx.strokeStyle = '#d4c48a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    
+    if (phase === 4) {
+        ctx.fillStyle = '#1a1a24';
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    
+    ctx.fillStyle = '#1a1a24';
+    let shadowOffsetX = 0;
+    switch (phase) {
+        case 0: shadowOffsetX = -radius * 1.6; break;
+        case 1: shadowOffsetX = -radius * 0.85; break;
+        case 2: shadowOffsetX = -radius * 0.5; break;
+        case 3: shadowOffsetX = -radius * 0.2; break;
+        case 4: shadowOffsetX = 0; break;
+        case 5: shadowOffsetX = radius * 0.2; break;
+        case 6: shadowOffsetX = radius * 0.5; break;
+        case 7: shadowOffsetX = radius * 0.85; break;
+    }
+    
+    if (phase !== 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.beginPath();
+        ctx.arc(shadowOffsetX, 0, radius * 0.98, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+    
+    if (phase === 0) {
+        ctx.strokeStyle = '#fffacd';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 0.82, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    ctx.translate(-camera.x, -camera.y);
+
+    if (mapImage.complete) {
+        ctx.drawImage(mapImage, 0, 0, WORLD.width, WORLD.height);
+    } else {
+        ctx.fillStyle = '#76c070';
+        ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+    }
+
+    ctx.strokeStyle = '#3a3d52';
+    ctx.lineWidth = 8;
+    ctx.strokeRect(0, 0, WORLD.width, WORLD.height);
+
+    if (player.isMoving) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(player.targetX, player.targetY, 12, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // キャラクター描画
+    if (charImage.complete && charImage.naturalWidth > 0) {
+        const blockW = charImage.width / 2;   // 750
+        const blockH = charImage.height / 2;  // 500
+        const spriteW = blockW / 3;           // 250
+        const spriteH = blockH;               // 500
+
+        let srcX = 0;
+        let srcY = 0;
+
+        switch(player.direction) {
+            case 'up':
+                srcX = 0 + (player.animFrame * spriteW);
+                srcY = 0;
+                break;
+            case 'down':
+                srcX = 0 + (player.animFrame * spriteW);
+                srcY = blockH;
+                break;
+            case 'left':
+                srcX = blockW + (player.animFrame * spriteW);
+                srcY = 0;
+                break;
+            case 'right':
+                srcX = blockW + (player.animFrame * spriteW);
+                srcY = blockH;
+                break;
+        }
+
+        // ★★★ 比例を正しく保つための重要修正 ★★★
+        // ソースの縦長フレーム（250x500）を歪めずに表示
+        const srcAspect = spriteW / spriteH;           // 0.5 (縦長)
+        const destH = player.baseSize;                 // 基準の高さ（ここを大きくすると全体が大きくなる）
+        const destW = destH * srcAspect;               // 幅をアスペクト比に合わせて自動計算
+
+        // 影（高さに合わせて位置調整）
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.beginPath();
+        ctx.ellipse(
+            player.x, 
+            player.y + destH / 2 - 6, 
+            destW * 0.35, 
+            8, 
+            0, 0, Math.PI * 2
+        );
+        ctx.fill();
+
+        ctx.drawImage(
+            charImage,
+            srcX, srcY, spriteW, spriteH,
+            player.x - destW / 2, 
+            player.y - destH / 2,
+            destW, destH
+        );
+    } else {
+        ctx.fillStyle = '#ff758f';
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, 20, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    ctx.restore();
+
+    // 満月（左上）
+    const moonX = 50;
+    const moonY = 50;
+    const moonSize = 48;
+    drawMoon(ctx, moonX, moonY, moonSize, moonPhase);
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+window.addEventListener('resize', resizeGame);
+window.addEventListener('load', () => {
+    resizeGame();
+    gameLoop();
+});
+</script>
+
+</body>
+</html>
